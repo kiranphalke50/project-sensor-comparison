@@ -12,7 +12,7 @@ bluebear = True
 base_folder = Path(r"/rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison/data") if bluebear else Path(r"T:\project-sensor_comparison\data")
 
 # subject list
-subject_list = ["sub-all", "sub-dipole9Hz", "sub-dipole17Hz", "sub-dipole32Hz"]
+subject_list = ["sub-all", "sub-dipole9Hz", "sub-dipole17Hz", "sub-dipole32Hz", "sub-dipole1kHz"]
 
 # Scaling factor input, P value of PID on PLL
 P1 = 50
@@ -158,9 +158,12 @@ for subject in subject_list:
 
         # --- Data Preparation ---
 
-        # Load the data from the base directory, extracting relevant files based on the target strings.
+        # data is kept in the concat directory under each run folder
+        run_concat_folder = run_input_folder / "concat"
+
+        # Load the data from the concat directory, extracting relevant files based on the target strings.
         # This will return a dictionary with the 'data' and 'header' for each target string.
-        extracted_files = load_data(run_input_folder, target_strings)
+        extracted_files = load_data(run_concat_folder, target_strings)
 
         # Print the names of the extracted files for verification
         for key, value in extracted_files.items():

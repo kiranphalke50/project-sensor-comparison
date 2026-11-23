@@ -10,7 +10,7 @@ bluebear = True
 base_folder = Path(r"/rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison/data") if bluebear else Path(r"T:\project-sensor_comparison\data")
 
 # subject list
-subject_list = ["sub-all", "sub-dipole9Hz", "sub-dipole17Hz", "sub-dipole32Hz"]
+subject_list = ["sub-all", "sub-dipole9Hz", "sub-dipole17Hz", "sub-dipole32Hz", "sub-dipole1kHz"]
 
 # input/output paths (input : base/data/subject/daq/runs, output : base/data/subject/daq/runs/concat)
 for subject in subject_list:
