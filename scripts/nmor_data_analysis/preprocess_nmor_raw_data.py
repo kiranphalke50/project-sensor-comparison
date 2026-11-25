@@ -7,6 +7,9 @@
 # 5. TMS artefact handling - needs to be done in time domain, before any kind of brain-like preprocessing steps
 #    Masking the pulse till 5-10ms (exact time to be found after several rounds) - could be as early as 8ms such that the TMS click has entered its decay phase
 #    Fitting exponential decay function to the TMS artefact and subtracting it from the data
+#    NOTE : Fitting exponential first because TMS artefact is best explained by an exponential decay (confirmed visually after plotting the average epochs).
+#           Using polynomial detrending first may remove part of exponential drift as well as dipole signal (exponential is less likely to do that
+#           since exponential function has only 3 parameters, whereas 4th order polynomial will have 5 parameters that can potentially explain more part of the dipole/brain signal also).
 #    Applying polynomial detrending to the data to remove any slow drifts in the data
 #    Interpolating the data to fill in the masked TMS pulse region before proceeding to TFR analysis (not implemented yet)
 # 6. filter data - bandpass filter between 3-40Hz and notch filter at 50Hz and its harmonics to see how the TMS clicks look like in the frequency range of interest
@@ -25,23 +28,20 @@ from scipy.optimize import curve_fit
 EPOCH_START = -0.1  # seconds
 EPOCH_END = 2.0  # seconds
 TMS_MASK_START = 0  # seconds - start of TMS artefact masking
-TMS_MASK_END = 0.015  # seconds - end of TMS artefact masking
-TMS_EXP_FIT_START = (
-    TMS_MASK_END  # seconds - start of TMS artefact exponential decay fitting
-)
-TMS_EXP_FIT_END = TMS_EXP_FIT_START + 0.050  # seconds - end of TMS artefact exponential decay fitting
+TMS_MASK_END = 0.010  # seconds - end of TMS artefact masking
+TMS_EXP_FIT_DURATION = 0.1  # seconds - NOTE : specifying start and end once again caused a bug where first sample of the masked epoch was getting left out of the exp correction
 INTERPOLATION_START = (
-    TMS_MASK_START - 0.05
+    TMS_MASK_START - 0.050
 )  # seconds - start of interpolation to fill in the masked TMS pulse region
 INTERPOLATION_END = (
-    TMS_MASK_END + 0.05
+    TMS_MASK_END + 0.050
 )  # seconds - end of interpolation to fill in the masked TMS pulse region
 DETRENDING_POLY_ORDER = 2  # order of polynomial for detrending
 FMIN_TFR = 3  # Hz - minimum frequency for TFR analysis
 FMAX_TFR = 40  # Hz - maximum frequency for TFR analysis
 
-# project folder
-bluebear = True
+# project folder (check if the BLUEBEAR environment variable is set to 1, only set when calling the script from .sh script on BlueBEAR)
+bluebear = os.environ.get("BLUEBEAR", "0") == "1"
 base_folder = (
     Path(r"/rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison")
     if bluebear
@@ -62,7 +62,8 @@ def exp_func(t, a, b, c):
     return a * np.exp(-b * t) + c
 
 
-def remove_tms_exp_decay(epochs, fit_window):
+
+def remove_tms_exp_decay(epochs, fit_duration):
     """
     Fit and remove TMS exponential decay artefact.
 
@@ -71,27 +72,34 @@ def remove_tms_exp_decay(epochs, fit_window):
     epochs : mne.Epochs
         Epochs after TMS pulse masking.
 
-    fit_window : tuple
-        (start_time, end_time) in seconds relative to the TMS pulse.
+    fit_duration : float
+        Duration of the TMS artefact to fit the exponential decay function, in seconds.
 
     Returns
     -------
     epochs_corrected : mne.Epochs
         Epochs with fitted exponential decay removed.
     """
-
+    # create a cpy of the epochs which will be returned after exponential decay correction
     epochs_corrected = epochs.copy()
 
+    # get the data and times from the epochs
     data = epochs_corrected.get_data()  # (n_epochs, n_channels, n_times)
     times = epochs_corrected.times
 
-    fit_idx = np.where((times >= fit_window[0]) & (times <= fit_window[1]))[0]
+    # NOTE : only pass masked epochs to the exp correction function because the first sample should be the one after the masked TMS pulse
+    # restrict time idx to the fit window
+    fit_idx = np.where(times <= times[0] + fit_duration)[0]
 
     t_fit = times[fit_idx]
     t_fit = t_fit - t_fit[0]
 
+    # identify the last idx of the fit window and the first idx after the fit window for offset calculation
+    end_fit_idx = fit_idx[-1]
+    after_fit_idx = end_fit_idx + 1 if end_fit_idx + 1 < len(times) else end_fit_idx
+
+    # initialize arrays to store fit quality metrics
     exp_fit_r2 = np.zeros(data.shape[0])
-    exp_fit_rmse = np.zeros(data.shape[0])
     exp_fit_tau = np.zeros(data.shape[0])
     n_success = 0
 
@@ -114,26 +122,40 @@ def remove_tms_exp_decay(epochs, fit_window):
             )
 
             fit_curve = exp_func(t_fit, *popt)
+            # subtract the fitted exponential decay from the original data in the fit window
+            data[ep, 0, fit_idx] -= fit_curve
+
+            # adjust the offset of the data after the fit window to match the last value of the corrected fit window
+            offset = data[ep, 0, end_fit_idx] - data[ep, 0, after_fit_idx]
+            data[ep, 0, after_fit_idx:] += offset
 
             # calculate fit quality metric
             residuals = y - fit_curve
             ss_res = np.sum(residuals**2)
             ss_tot = np.sum((y - np.mean(y)) ** 2)
             r_squared = 1 - (ss_res / ss_tot)
-
-            # subtract the fitted exponential decay from the original data in the fit window
-            data[ep, 0, fit_idx] -= fit_curve
             exp_fit_r2[ep] = r_squared
-            exp_fit_rmse[ep] = np.sqrt(ss_res / len(y))
             exp_fit_tau[ep] = 1 / popt[1]
             n_success += 1
+
+            # debug
+            # only if the script is run locally, not on BlueBEAR, to avoid plotting in a headless environment
+            if not bluebear:
+                # plot the original data, fitted curve, and corrected data for the current epoch
+                plt.figure()
+                plt.plot(t_fit, y, label="Original")
+                plt.plot(t_fit, fit_curve, label="Fitted")
+                plt.plot(t_fit, data[ep, 0, fit_idx], label="Corrected")
+                plt.legend()
+                plt.show()
+            # debug
 
         except RuntimeError:
             continue
 
     epochs_corrected._data = data
     print(f"Exponential fit successful for {n_success}/{data.shape[0]} epochs")
-    return epochs_corrected, exp_fit_r2, exp_fit_rmse, exp_fit_tau
+    return epochs_corrected, exp_fit_r2, exp_fit_tau
 
 
 def poly_detrend_epochs(epochs, order=2):
@@ -160,6 +182,53 @@ def poly_detrend_epochs(epochs, order=2):
 def interpolate_epochs(pre_mask_data, post_mask_data):
     # Placeholder for interpolation logic
     pass
+
+
+def plot_raw_epochs_10x10(
+    epochs,
+    tmin,
+    tmax,
+    title="Raw Epochs",
+    plot_folder=None,
+    filename="raw_epochs",
+):
+    """Plot 10x10 grid of epochs."""
+    cropped_epochs = epochs.copy().crop(tmin=tmin, tmax=tmax, include_tmax=True)
+    n_epochs = cropped_epochs.get_data().shape[0]
+    n_rows = 10
+    n_cols = 10
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 15))
+    for i in range(n_rows):
+        for j in range(n_cols):
+            idx = i * n_cols + j
+            if idx < n_epochs:
+                axes[i, j].plot(
+                    cropped_epochs.times, cropped_epochs.get_data()[idx, 0, :] * 1e15
+                )
+                axes[i, j].axis("tight")
+                # suppress labels and ticks for bigger plots
+                axes[i, j].set_xticks([])
+                axes[i, j].set_xlabel("")
+                axes[i, j].set_ylabel("")
+            else:
+                axes[i, j].axis("off")
+    plt.tight_layout()
+    plt.suptitle(title)
+    if not bluebear:
+        plt.show()
+        plt.savefig(
+            f"{plot_folder}/{filename}.png",
+            dpi=300,
+            bbox_inches="tight",
+        )
+    else:
+        plt.savefig(
+            f"{plot_folder}/{filename}.png",
+            dpi=300,
+            bbox_inches="tight",
+        )
+    plt.close()
+
 
 # input/output paths
 # input : base/data/subject/meg/**dipoleOnly*_raw.fif or base/data/subject/meg/**dipoleTMS*_raw.fif
@@ -242,11 +311,43 @@ for subject in subject_list:
         ax.set_title("TMS Evoked Response - Single Epochs with Average")
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Amplitude (fT)")
+        plt.axis("tight")
         plt.legend()
         # plt.show()
 
         # save the plot in the subject output folder
         plt.savefig(plot_folder / f"{meg_data_filename}_single_epochs_with_evoked.png")
+        plt.close()
+
+        # plot all epochs in 10x10 grid to see the TMS pulse clearly
+        plot_raw_epochs_10x10(
+            tms_epochs_orig,
+            tmin=EPOCH_START,
+            tmax=0.1,
+            title="TMS Pulse",
+            plot_folder=plot_folder,
+            filename=f"raw_TMS_pulse_per_epoch_{meg_data_filename}"
+        )
+
+        # Obtain peak of the TMS artefact in each epoch and plot a histogram (helpful in choosing the TMS_MASK_END time for masking the TMS pulse)
+        # TMS_MASK_END should be chosen such that the TMS pulse has entered its decay phase, and the peak of the TMS artefact should be within the masked region
+        # but without masking too much of the dipole signal (which is expected to start around 10ms after the TMS pulse)
+        tms_peak_times = []
+        single_epoch_data = tms_epochs_orig.get_data()[
+            :, 0, :
+        ]  # number of epochs x number of time points
+        for epoch in single_epoch_data:
+            peak_idx = np.argmax(np.abs(epoch))
+            peak_time = tms_epochs_orig.times[peak_idx]
+            tms_peak_times.append(peak_time)
+
+        # Plot a histogram of the TMS artefact peaks
+        plt.figure()
+        plt.hist(tms_peak_times, bins=20, alpha=0.7, color="blue")
+        plt.xlabel("Peak Time (s)")
+        plt.ylabel("Frequency")
+        plt.title("Distribution of TMS Artefact Peaks")
+        plt.savefig(plot_folder / f"{meg_data_filename}_tms_peak_times.png")
         plt.close()
 
         # Crop the epochs to mask the TMS pulse for further analysis
@@ -264,11 +365,9 @@ for subject in subject_list:
         )
 
         # fit exponential decay function to the TMS artefact and subtract it from the data
-        tms_epochs_exp_corrected, exp_fit_r2, exp_fit_rmse, exp_fit_tau = (
-            remove_tms_exp_decay(
-                tms_epochs_orig_masked, fit_window=(TMS_EXP_FIT_START, TMS_EXP_FIT_END)
-            )
-        )
+        # NOTE : only pass masked epochs to the exp correction function because the first sample should be the one after the masked TMS pulse
+        tms_epochs_exp_corrected, exp_fit_r2, exp_fit_tau = remove_tms_exp_decay(
+            tms_epochs_orig_masked, fit_duration=TMS_EXP_FIT_DURATION)
         tms_evoked_exp_corrected = tms_epochs_exp_corrected.average()
         tms_epochs_exp_corrected.save(
             evoked_response_folder
@@ -286,35 +385,46 @@ for subject in subject_list:
             evoked_response_folder
             / f"{meg_data_filename}_TMSmasked_expcorrected_fit_metrics.npz",
             r2=exp_fit_r2,
-            rmse=exp_fit_rmse,
             tau=exp_fit_tau,
         )
 
         # plot a histogram of the exponential fit quality metrics for the current subject and save it to the subject_output_folder/figures folder
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5))
         axes[0].hist(exp_fit_r2, bins=20, color="blue", alpha=0.7)
-        axes[0].set_title("Exponential Fit R^2")
+        axes[0].set_title("Quality of Exponential Fit (R^2)")
         axes[0].set_xlabel("R^2")
         axes[0].set_ylabel("Frequency")
 
-        axes[1].hist(exp_fit_rmse, bins=20, color="green", alpha=0.7)
-        axes[1].set_title("Exponential Fit RMSE")
-        axes[1].set_xlabel("RMSE")
+        axes[1].hist(exp_fit_tau, bins=20, color="red", alpha=0.7)
+        axes[1].set_title("Exponential Tail Decay Time Constant (Tau)")
+        axes[1].set_xlabel("Decay Time Constant (s)")
         axes[1].set_ylabel("Frequency")
-
-        axes[2].hist(exp_fit_tau, bins=20, color="red", alpha=0.7)
-        axes[2].set_title("Exponential Fit Tau")
-        axes[2].set_xlabel("Tau")
-        axes[2].set_ylabel("Frequency")
 
         plt.tight_layout()
         plt.savefig(
-            plot_folder
-            / f"{meg_data_filename}_TMSmasked_expcorrected_fit_metrics.png",
+            plot_folder / f"{meg_data_filename}_TMSmasked_expcorrected_fit_metrics.png",
             dpi=300,
             bbox_inches="tight",
         )
         plt.close()
+
+        # 10x10 plot : plot the epochs after exponential decay correction in a 10x10 grid to see how the TMS pulse looks like after correction
+        plot_raw_epochs_10x10(
+            tms_epochs_exp_corrected,
+            tmin=TMS_MASK_END+0.001,
+            tmax=EPOCH_END,
+            title=f"Single epochs After TMS masking and Exponential Decay Correction : {TMS_MASK_END}-{EPOCH_END}sec",
+            plot_folder=plot_folder,
+            filename=f"expcorrected_epochs_{meg_data_filename}"
+        )
+        plot_raw_epochs_10x10(
+            tms_epochs_exp_corrected,
+            tmin=TMS_MASK_END,
+            tmax=TMS_MASK_END+200e-3,  # plot only the first 200ms after TMS masking to see the post-TMS period clearly
+            title=f"Single epochs After TMS masking and Exponential Decay Correction : {TMS_MASK_END}-{TMS_MASK_END+200e-3}sec",
+            plot_folder=plot_folder,
+            filename=f"expcorrected_epochs_zoomed_{meg_data_filename}"
+        )
 
         # fit polynomial of order DETRENDING_POLY_ORDER to the data and subtract it from the data
         tms_epochs_detrended = poly_detrend_epochs(
@@ -342,7 +452,6 @@ for subject in subject_list:
         # epoch_orig_pre_tms_mask = tms_epochs_orig.get_data()[:, 0, interpolation_times_pre_tms_mask]
         # epoch_orig_post_tms_mask = tms_epochs_detrended.get_data()[:, 0, interpolation_times_post_tms_mask]
         # tms_epochs_interpolated = tms_epochs_orig.copy()
-
 
         # filter the evoked response between 3-40Hz to see how the TMS clicks look like in the frequency range of interest
         # plot time domain and frequency domain responses for 3 cases - original, exponential fitted, and detrended

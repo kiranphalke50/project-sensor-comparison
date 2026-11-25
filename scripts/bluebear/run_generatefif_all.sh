@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --qos=bbdefault
-#SBATCH --time=1:00:00
+#SBATCH --time=00:10:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=12
 #SBATCH --account=kowalcau-opm-recordings
