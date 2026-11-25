@@ -30,8 +30,8 @@ FMIN_REPORTING_ASD = 2.0  # Hz, minimum frequency for reporting ASD
 FMAX_REPORTING_ASD = 48.0  # Hz, maximum frequency for reporting ASD
 
 # Load the TMS-OPM dataset (T:\project-sensor_comparison\pilot_data\sub-dipole9Hz_task-empty_acq-nmor11fs1_run-02_000\concat\mne_raw)
-# project folder
-bluebear = False
+# project folder (check if the BLUEBEAR environment variable is set to 1, only set when calling the script from .sh script on BlueBEAR)
+bluebear = os.environ.get("BLUEBEAR", "0") == "1"
 base_folder = Path(r"/rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison") if bluebear else Path(r"T:\project-sensor_comparison")
 
 # subject list

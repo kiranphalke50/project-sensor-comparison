@@ -7,8 +7,8 @@ import pandas as pd
 
 # %% paths and constants
 
-# project folder
-bluebear = True
+# project folder (check if the BLUEBEAR environment variable is set to 1, only set when calling the script from .sh script on BlueBEAR)
+bluebear = os.environ.get("BLUEBEAR", "0") == "1"
 base_folder = Path(r"/rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison/data") if bluebear else Path(r"T:\project-sensor_comparison\data")
 
 # subject list

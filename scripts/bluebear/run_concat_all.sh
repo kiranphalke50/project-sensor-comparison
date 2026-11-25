@@ -11,5 +11,8 @@ module purge
 module load bear-apps/2022a
 module load MNE-Python/1.3.1-foss-2022a
 
+# define a environment variable to signify that the script is running on BlueBEAR
+export BLUEBEAR=1
+
 # run concat script for all subjects/runs
 python /rds/projects/k/kowalcau-tms-opm-meg/project-sensor_comparison/code/project-sensor-comparison/scripts/gen2_analysis_harrys_script/concat.py
